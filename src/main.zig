@@ -34,15 +34,15 @@ export fn netudp_dispatch(op: u32, in_buffer: *const r4os.abi.ProtocolBuffer, ou
     _ = out_buffer;
     const request = requestFromBuffer(in_buffer) orelse return -2;
     switch (op) {
-        r4os.abi.udp_op_handle_rx => inspect(request),
-        r4os.abi.udp_op_handle_tx => inspect(request),
+        r4os.abi.udp_op_handle_rx => inspect(request, (in_buffer.flags & r4os.abi.protocol_buffer_flag_rx_l4_checksum_valid) != 0),
+        r4os.abi.udp_op_handle_tx => inspect(request, false),
         r4os.abi.udp_op_build_datagram => buildDatagram(request),
         else => return -4,
     }
     return request.result;
 }
 
-fn inspect(request: *r4os.abi.UdpOp) void {
+fn inspect(request: *r4os.abi.UdpOp, l4_checksum_valid: bool) void {
     request.payload_len = 0;
     if (request.datagram_len < HEADER_SIZE or request.datagram_len > request.datagram.len) {
         request.result = r4os.abi.udp_result_short;
@@ -56,7 +56,7 @@ fn inspect(request: *r4os.abi.UdpOp) void {
     }
     const packet = datagram[0..udp_len];
     const checksum_field = readBe16(packet, 6);
-    if (checksum_field != 0 and checksum(request.source_ip, request.dest_ip, packet) != 0) {
+    if (!l4_checksum_valid and checksum_field != 0 and checksum(request.source_ip, request.dest_ip, packet) != 0) {
         request.result = r4os.abi.udp_result_checksum;
         return;
     }
