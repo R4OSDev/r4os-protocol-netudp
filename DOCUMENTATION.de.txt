@@ -14,9 +14,9 @@ Build unter Linux:
 
     ./Build.sh
 
-Artefakt:
+Standardziel im Workspace, ueber ARTIFACTS_ROOT in Settings.R4S:
 
-    zig-out/NETUDP.R4P
+    Artifacts/Modules/NetUdp/NETUDP.R4P
 
 Manifest:
 
