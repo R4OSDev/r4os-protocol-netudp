@@ -1,21 +1,22 @@
 const r4os = @import("r4os");
+const ipv6 = @import("ipv6.zig");
 
 const IPV4_PROTOCOL: u8 = 17;
 const HEADER_SIZE: usize = 8;
 
 comptime {
-    asm (r4os.r4dev.protocolEntriesAsm("netudp_init", "netudp_shutdown", "netudp_query", "netudp_dispatch"));
+    asm (r4os.technical2.protocolEntriesAsm("netudp_init", "netudp_shutdown", "netudp_query", "netudp_dispatch"));
 }
 
-export fn netudp_init(api: *const r4os.r4dev.ProtocolApi) callconv(.c) i32 {
-    var ctx = r4os.r4dev.ProtocolContext.init(api);
-    ctx.logInfo("NETUDP.R4P init");
-    _ = ctx.registerRole("net.udp", .net, 0);
-    _ = ctx.setStatus(.active, "UDP R4P active");
-    return 0;
+export fn netudp_init(api: *const r4os.abi.ProtocolApi2) callconv(.c) i32 {
+    const view = r4os.technical2.Protocol.init(api) orelse return r4os.abi.network_error_backend;
+    ipv6.init(api) catch |err| return r4os.network_transport.common.code(err);
+    if (view.function("register_role").?("net.udp", @intFromEnum(r4os.abi.ProtocolCategory.net), 0) != 0) return r4os.abi.network_error_backend;
+    return view.function("set_status").?(@intFromEnum(r4os.abi.ProtocolState.active), "UDP IPv4 codec and external IPv6 transport");
 }
 
 export fn netudp_shutdown() callconv(.c) i32 {
+    ipv6.stop();
     return 0;
 }
 
@@ -31,7 +32,7 @@ export fn netudp_query(out: *r4os.abi.ProtocolStatus) callconv(.c) i32 {
 }
 
 export fn netudp_dispatch(op: u32, in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) callconv(.c) i32 {
-    _ = out_buffer;
+    if (op >= r4os.abi.network_op_info) return ipv6.dispatch(op, in_buffer, out_buffer);
     const request = requestFromBuffer(in_buffer) orelse return -2;
     switch (op) {
         r4os.abi.udp_op_handle_rx => inspect(request, (in_buffer.flags & r4os.abi.protocol_buffer_flag_rx_l4_checksum_valid) != 0),
