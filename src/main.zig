@@ -5,14 +5,21 @@ const IPV4_PROTOCOL: u8 = 17;
 const HEADER_SIZE: usize = 8;
 
 comptime {
-    asm (r4os.technical2.protocolEntriesAsm("netudp_init", "netudp_shutdown", "netudp_query", "netudp_dispatch"));
+    if (!@import("builtin").is_test) asm (r4os.technical2.protocolEntriesAsm("netudp_init", "netudp_shutdown", "netudp_query", "netudp_dispatch"));
 }
 
 export fn netudp_init(api: *const r4os.abi.ProtocolApi2) callconv(.c) i32 {
     const view = r4os.technical2.Protocol.init(api) orelse return r4os.abi.network_error_backend;
+    const register = view.function("register_role") orelse return r4os.abi.err_no_fn;
+    const status = view.function("set_status") orelse return r4os.abi.err_no_fn;
     ipv6.init(api) catch |err| return r4os.network_transport.common.code(err);
-    if (view.function("register_role").?("net.udp", @intFromEnum(r4os.abi.ProtocolCategory.net), 0) != 0) return r4os.abi.network_error_backend;
-    return view.function("set_status").?(@intFromEnum(r4os.abi.ProtocolState.active), "UDP IPv4 codec and external IPv6 transport");
+    if (register("net.udp", @intFromEnum(r4os.abi.ProtocolCategory.net), 0) != 0) {
+        ipv6.stop();
+        return r4os.abi.network_error_backend;
+    }
+    const result = status(@intFromEnum(r4os.abi.ProtocolState.active), "UDP IPv4 codec and external IPv6 transport");
+    if (result != 0) ipv6.stop();
+    return result;
 }
 
 export fn netudp_shutdown() callconv(.c) i32 {
@@ -92,37 +99,40 @@ fn buildDatagram(request: *r4os.abi.UdpOp) void {
 }
 
 fn requestFromBuffer(buffer: *const r4os.abi.ProtocolBuffer) ?*r4os.abi.UdpOp {
-    if (buffer.data == null) return null;
-    if (buffer.len < @sizeOf(r4os.abi.UdpOp)) return null;
-    return @ptrCast(@alignCast(buffer.data.?));
+    const native = r4os.native_protocol_view;
+    var policy = native.Policy.record(r4os.abi.UdpOp, .inout, .prefix);
+    // This flag only admits the existing trusted RX metadata; the operation
+    // still decides whether it may skip its wire checksum. TX never does.
+    policy.allowed_flags = r4os.abi.protocol_buffer_flag_rx_l4_checksum_valid;
+    var metadata = buffer.*;
+    const view = native.InOut(r4os.abi.UdpOp).init(&metadata, policy) catch return null;
+    return view.value;
 }
 
 fn checksum(source_ip: [4]u8, dest_ip: [4]u8, udp: []const u8) u16 {
-    var sum: u32 = 0;
-    sum = addIp(sum, source_ip);
-    sum = addIp(sum, dest_ip);
-    sum += IPV4_PROTOCOL;
-    sum += @intCast(udp.len);
-    var i: usize = 0;
-    while (i + 1 < udp.len) : (i += 2) {
-        sum += (@as(u32, udp[i]) << 8) | udp[i + 1];
-    }
-    if (i < udp.len) sum += @as(u32, udp[i]) << 8;
-    while ((sum >> 16) != 0) sum = (sum & 0xFFFF) + (sum >> 16);
-    return @intCast(~sum & 0xFFFF);
-}
-
-fn addIp(sum_in: u32, ip: [4]u8) u32 {
-    return sum_in + (@as(u32, ip[0]) << 8 | ip[1]) + (@as(u32, ip[2]) << 8 | ip[3]);
+    // The protocol retains pseudoheader composition and UDP zero policy.
+    var header: [4]u8 = .{ 0, IPV4_PROTOCOL, 0, 0 };
+    var writer = r4os.binary_cursor.Writer.init(&header) catch unreachable;
+    writer.position = 2;
+    writer.writeInt(u16, @intCast(udp.len), .big) catch unreachable;
+    var value: r4os.internet_checksum.Checksum16 = .{};
+    value.add(&source_ip) catch unreachable;
+    value.add(&dest_ip) catch unreachable;
+    value.add(&header) catch unreachable;
+    value.add(udp) catch unreachable;
+    return value.finish() catch unreachable;
 }
 
 fn readBe16(buf: []const u8, offset: usize) u16 {
-    return (@as(u16, buf[offset]) << 8) | buf[offset + 1];
+    var reader = r4os.binary_cursor.Reader.init(buf) catch unreachable;
+    _ = reader.take(offset) catch unreachable;
+    return reader.readInt(u16, .big) catch unreachable;
 }
 
 fn writeBe16(buf: []u8, offset: usize, value: u16) void {
-    buf[offset] = @intCast(value >> 8);
-    buf[offset + 1] = @intCast(value & 0xFF);
+    var writer = r4os.binary_cursor.Writer.init(buf) catch unreachable;
+    writer.position = offset;
+    writer.writeInt(u16, value, .big) catch unreachable;
 }
 
 fn note(comptime text: []const u8) [64]u8 {

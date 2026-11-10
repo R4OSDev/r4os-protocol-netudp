@@ -105,13 +105,19 @@ fn dispatchInner(op: u32, input: *const a.ProtocolBuffer, output: *a.ProtocolBuf
         } else |err| if (err != error.NotFound and err != error.UnsupportedPolicy) return err;
         return t.put(a.NetworkProviderInfo, &info, "", output);
     }
+    const native = sdk.native_protocol_view;
+    var input_policy = native.Policy.versioned(a.NetworkTransportRequest, 1, .input, .prefix);
+    input_policy.alignment = 1; // the existing copied header + payload transport
+    _ = native.admit(input, input_policy, .input) catch return error.Invalid;
     const value = try r.decodeRequest(input, output);
     const req = value.request;
     if (req.flags != 0) return error.UnsupportedPolicy;
     const sending = op == a.network_op_send;
     if (input.len != @sizeOf(a.NetworkTransportRequest) + @as(usize, if (sending) req.bytes else 0)) return error.Invalid;
     if (!sending and op != a.network_op_recv and req.bytes != 0) return error.Invalid;
-    if (output.data == null or output.capacity < @sizeOf(a.NetworkSocketResult)) return error.Capacity;
+    var output_policy = native.Policy.record(a.NetworkSocketResult, .output, .prefix);
+    output_policy.alignment = 1;
+    _ = native.admit(output, output_policy, .output) catch return error.Capacity;
     if (op == a.network_transport_op_tick) {
         if (req.socket != 0 or req.generation != 0) return error.Invalid;
         try tick(r);
